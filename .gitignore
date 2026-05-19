@@ -1,0 +1,73 @@
+# ============================================================
+# KitagawaHealth v2.0.0 — .gitignore
+# ============================================================
+
+# --- Datos de entrada (no subir datos sensibles o personales) ---
+*.xlsx
+*.xls
+*.csv
+*.json
+data/
+datos/
+input/
+
+# --- Resultados generados por el software ---
+kitagawa_results*.xlsx
+resultados*.xlsx
+fig_*.png
+mapa_*.png
+*.png
+*.pdf
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+parts/
+var/
+sdist/
+develop-eggs/
+.installed.cfg
+lib/
+lib64/
+
+# --- Entornos virtuales ---
+venv/
+env/
+ENV/
+.venv/
+.env
+
+# --- Jupyter / IPython / Colab ---
+.ipynb_checkpoints/
+*.ipynb
+
+# --- IDEs y editores ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# --- Logs y temporales ---
+*.log
+*.tmp
+*.temp
+tmp/
+temp/
+
+# --- Credenciales y configuraciones locales ---
+.env
+*.env
+secrets.py
+config_local.py
