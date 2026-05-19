@@ -262,8 +262,8 @@ y `p_A_i` y `p_B_i` son las proporciones de cada grupo en ese estrato.
                for quantitative health gap analysis},
   year      = {2026},
   version   = {2.0.0},
-  doi       = {10.5281/zenodo.XXXXXXX},
-  url       = {https://doi.org/10.5281/zenodo.XXXXXXX}
+  doi       = {10.5281/zenodo.20291587},
+  url       = {https://doi.org/10.5281/zenodo.20291587}
 }
 ```
 
