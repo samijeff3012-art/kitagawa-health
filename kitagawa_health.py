@@ -2,7 +2,7 @@
 """
 kitagawa_health.py
 ==================
-KitagawaHealth v2.0.0
+KitagawaHealth v2.1.0
 
 Herramienta generalizada de descomposición de Kitagawa para el análisis
 de brechas en indicadores cuantitativos de salud entre dos grupos cualesquiera.
@@ -24,14 +24,46 @@ Autores  : Cesar Jefferson Samillan Vasquez
            Mercedes Acosta Román
            Gladys Bernardita León Montoya
            Rosa Ysabel Bazán Valque
-Versión  : 2.0.0
+Versión  : 2.1.0
 Licencia : MIT
-DOI      : [To be assigned via Zenodo]
+DOI      : 10.5281/zenodo.20291587
+
+Novedades de la versión 2.1.0
+-----------------------------
+1. `compare_years()` ahora usa una descomposición EXACTA y SIMÉTRICA.
+   En la v2.0.0 el efecto de tasa y el de estructura no sumaban el cambio
+   total reportado (omitían el término de interacción) y el resultado
+   dependía del año que se eligiera como base, hasta el punto de invertir
+   el signo del efecto de estructura. La nueva especificación cumple
+   efecto_tasa + efecto_estructura = delta_total con error de coma flotante
+   y es invariante al orden de los años.
+
+2. Agregación de tasas PONDERADA por conteos. En la v2.0.0, cuando había
+   varias filas por estrato, las tasas se promediaban de forma simple aun
+   cuando los conteos estaban disponibles, lo que sesgaba las tasas de
+   estrato y, con ellas, ambos componentes. Ahora se pondera por el conteo
+   (exposición) de cada fila. Controlable con `rate_weighting`.
+
+3. INFERENCIA. Nuevo método `bootstrap()` que entrega errores estándar e
+   intervalos de confianza para los componentes de tasa y de estructura,
+   mediante remuestreo multinomial de la composición y binomial/Poisson de
+   las tasas. Antes los componentes se reportaban como puntos sin
+   incertidumbre.
+
+4. Nuevo método `check_identity()` para verificación formal de las
+   identidades algebraicas del software.
 
 Referencias
 -----------
 Kitagawa EM. (1955). Components of a difference between two rates.
 Journal of the American Statistical Association, 50(272), 1168–1194.
+
+Das Gupta P. (1993). Standardization and decomposition of rates:
+a user's manual. U.S. Bureau of the Census, Current Population Reports,
+Series P23-186.
+
+Efron B, Tibshirani RJ. (1993). An introduction to the bootstrap.
+Chapman & Hall.
 """
 
 import logging
@@ -52,6 +84,8 @@ logging.basicConfig(
     datefmt= '%H:%M:%S',
 )
 logger = logging.getLogger('kitagawa_health')
+
+__version__ = '2.1.0'
 
 
 # ── Excepciones específicas ───────────────────────────────────────────────────
@@ -183,10 +217,18 @@ class KitagawaDecomposer:
         year_filter   : Optional[Union[int, List[int]]] = None,
         row_filter    : Optional[Dict]  = None,
         exclude_strata: Optional[List]  = None,
+        rate_weighting: str             = 'auto',
+        random_state  : Optional[int]   = None,
     ):
         self._validate_inputs(data, stratum_col, rate_A_col, rate_B_col,
                               count_A_col, count_B_col, prop_A_col, prop_B_col,
                               year_col)
+
+        if rate_weighting not in ('auto', 'counts', 'simple'):
+            raise DataError(
+                "rate_weighting debe ser 'auto', 'counts' o 'simple'. "
+                f"Se recibió: {rate_weighting!r}"
+            )
         self.data           = data.copy()
         self.stratum_col    = stratum_col
         self.rate_A_col     = rate_A_col
@@ -201,10 +243,14 @@ class KitagawaDecomposer:
         self.year_filter    = year_filter
         self.row_filter     = row_filter or {}
         self.exclude_strata = exclude_strata or []
+        self.rate_weighting = rate_weighting
+        self.random_state   = random_state
         self.results_       = pd.DataFrame()
         self.summary_       = pd.DataFrame()
+        self.bootstrap_     = pd.DataFrame()
+        self.bootstrap_draws_ = None
         logger.info(f"KitagawaDecomposer iniciado: '{group_A_label}' vs '{group_B_label}' "
-                    f"| estrato: '{stratum_col}'")
+                    f"| estrato: '{stratum_col}' | ponderación de tasas: '{rate_weighting}'")
 
     # ── Validación ────────────────────────────────────────────────────────────
     def _validate_inputs(self, data, stratum_col, rate_A_col, rate_B_col,
@@ -336,23 +382,45 @@ class KitagawaDecomposer:
         Aplica la descomposición de Kitagawa sobre un subconjunto de datos
         (típicamente un año).
 
-        Regla de agregación:
-        - Tasas    → 'mean'  (promedio si hay múltiples filas por estrato)
+        Regla de agregación (v2.1.0):
+        - Tasas    → media PONDERADA por el conteo de la fila cuando los
+                     conteos están disponibles y rate_weighting != 'simple'.
+                     La tasa del estrato es entonces Σ(r·n)/Σ(n), que es la
+                     tasa que efectivamente se observaría al fusionar las
+                     filas. En la v2.0.0 se usaba 'mean' simple, lo que
+                     sobrepondera las filas de menor exposición y sesga
+                     ambos componentes.
         - Conteos  → 'sum'   (sumar si hay múltiples filas por estrato)
         - Proporciones directas → 'first' (deben venir pre-agregadas;
           promediar proporciones produce resultados incorrectos)
+
+        Nota sobre el significado de los conteos: en la descomposición de
+        Kitagawa, p_i es la composición de la POBLACIÓN (o exposición) del
+        grupo en el estrato i, y r_i la tasa en ese estrato. Por tanto los
+        conteos deben ser poblaciones/exposiciones, no eventos. Con esa
+        lectura, ponderar las tasas por los conteos es exactamente correcto.
 
         Returns pd.DataFrame con columnas:
             Estrato, tasa_A, tasa_B, brecha_tasa_real,
             prop_A, prop_B, C_tasa, C_estructura, C_total
         """
-        agg_dict = {
-            'tasa_A': (self.rate_A_col, 'mean'),
-            'tasa_B': (self.rate_B_col, 'mean'),
-        }
-        if self.count_A_col and self.count_A_col in df_sub.columns:
+        has_count_A = bool(self.count_A_col) and self.count_A_col in df_sub.columns
+        has_count_B = bool(self.count_B_col) and self.count_B_col in df_sub.columns
+        weight_rates = (self.rate_weighting != 'simple') and has_count_A and has_count_B
+
+        if self.rate_weighting == 'counts' and not (has_count_A and has_count_B):
+            raise DataError(
+                "rate_weighting='counts' exige count_A_col y count_B_col "
+                "presentes en los datos."
+            )
+
+        agg_dict = {}
+        if not weight_rates:
+            agg_dict['tasa_A'] = (self.rate_A_col, 'mean')
+            agg_dict['tasa_B'] = (self.rate_B_col, 'mean')
+        if has_count_A:
             agg_dict['count_A'] = (self.count_A_col, 'sum')
-        if self.count_B_col and self.count_B_col in df_sub.columns:
+        if has_count_B:
             agg_dict['count_B'] = (self.count_B_col, 'sum')
         # FIX 2: proporciones directas → 'first', no 'mean'
         if self.prop_A_col and self.prop_A_col in df_sub.columns:
@@ -360,7 +428,28 @@ class KitagawaDecomposer:
         if self.prop_B_col and self.prop_B_col in df_sub.columns:
             agg_dict[self.prop_B_col] = (self.prop_B_col, 'first')
 
-        agg = df_sub.groupby(self.stratum_col).agg(**agg_dict).reset_index()
+        if weight_rates:
+            tmp = df_sub.copy()
+            tmp['_num_A'] = tmp[self.rate_A_col] * tmp[self.count_A_col]
+            tmp['_num_B'] = tmp[self.rate_B_col] * tmp[self.count_B_col]
+            agg_dict['_num_A']   = ('_num_A', 'sum')
+            agg_dict['_num_B']   = ('_num_B', 'sum')
+            agg_dict['_mean_A']  = (self.rate_A_col, 'mean')
+            agg_dict['_mean_B']  = (self.rate_B_col, 'mean')
+            agg = tmp.groupby(self.stratum_col).agg(**agg_dict).reset_index()
+            # Σ(r·n)/Σ(n); si un estrato tiene exposición 0 se cae a la media
+            # simple para no perder el estrato.
+            with np.errstate(invalid='ignore', divide='ignore'):
+                agg['tasa_A'] = np.where(agg['count_A'] > 0,
+                                         agg['_num_A'] / agg['count_A'].replace(0, np.nan),
+                                         agg['_mean_A'])
+                agg['tasa_B'] = np.where(agg['count_B'] > 0,
+                                         agg['_num_B'] / agg['count_B'].replace(0, np.nan),
+                                         agg['_mean_B'])
+            agg = agg.drop(columns=['_num_A', '_num_B', '_mean_A', '_mean_B'])
+        else:
+            agg = df_sub.groupby(self.stratum_col).agg(**agg_dict).reset_index()
+
         agg = agg.rename(columns={self.stratum_col: 'Estrato'})
         agg = self._compute_proportions(agg)
 
@@ -379,8 +468,13 @@ class KitagawaDecomposer:
         agg['contrib_B'] = agg['tasa_B'] * agg['prop_B']
         agg['brecha_tasa_real'] = agg['contrib_A'] - agg['contrib_B']
 
-        return agg[['Estrato', 'tasa_A', 'tasa_B', 'brecha_tasa_real',
-                    'prop_A', 'prop_B', 'C_tasa', 'C_estructura', 'C_total']]
+        out_cols = ['Estrato', 'tasa_A', 'tasa_B', 'brecha_tasa_real',
+                    'prop_A', 'prop_B', 'C_tasa', 'C_estructura', 'C_total']
+        # v2.1.0: los conteos se conservan porque el bootstrap los necesita
+        for c in ('count_A', 'count_B'):
+            if c in agg.columns:
+                out_cols.append(c)
+        return agg[out_cols]
 
     # ── API Pública ───────────────────────────────────────────────────────────
     def run(self) -> 'KitagawaDecomposer':
@@ -437,70 +531,155 @@ class KitagawaDecomposer:
         year1: int,
         year2: int,
         base_year: Optional[int] = None,
+        method: str = 'exact',
+        round_output: bool = True,
     ) -> pd.DataFrame:
         """
-        Descompone el cambio en la brecha entre dos años usando Kitagawa.
+        Descompone el cambio de la brecha entre dos años.
 
-        Fija las proporciones del año base para aislar el efecto de cambio
-        en tasas (efecto período) del cambio en estructura poblacional.
+        Especificación exacta (v2.1.0, por defecto)
+        -------------------------------------------
+        La brecha de un año es, por estrato,
+
+            G_i(t) = r_Ai(t)·p_Ai(t) − r_Bi(t)·p_Bi(t)
+
+        y su cambio entre t1 y t2 se parte aplicando la identidad exacta
+        del producto  a₂b₂ − a₁b₁ = Δa·(b₁+b₂)/2 + Δb·(a₁+a₂)/2
+        por separado a cada grupo:
+
+            efecto_tasa_i       =  Δr_Ai·(p_Ai1+p_Ai2)/2
+                                 − Δr_Bi·(p_Bi1+p_Bi2)/2
+            efecto_estructura_i =  Δp_Ai·(r_Ai1+r_Ai2)/2
+                                 − Δp_Bi·(r_Bi1+r_Bi2)/2
+
+        Propiedades que sí cumple esta especificación y que la v2.0.0 no
+        cumplía:
+
+        * CIERRE: efecto_tasa + efecto_estructura = delta_total, con error
+          del orden de la precisión de coma flotante. La fórmula anterior
+          dejaba fuera el término de interacción y la suma podía quedar un
+          30 % por debajo del cambio reportado.
+        * INVARIANCIA AL AÑO BASE: no existe año base que elegir; el
+          resultado es simétrico en t1 y t2. La fórmula anterior daba
+          resultados distintos según la base e incluso invertía el signo
+          del efecto de estructura.
+        * ANTISIMETRÍA: intercambiar year1 y year2 cambia el signo de los
+          tres términos y nada más.
 
         Parameters
         ----------
         year1 : int
-            Año inicial (referencia).
+            Año inicial.
         year2 : int
-            Año final (comparación).
+            Año final.
         base_year : int or None
-            Año cuyas proporciones se usan como base fija.
-            Si None, usa year1.
+            Solo se usa con method='legacy'. Con method='exact' se ignora
+            (y se advierte), porque la especificación exacta no depende de
+            ninguna base.
+        method : {'exact', 'legacy'}
+            'exact'  → especificación de la v2.1.0 (recomendada).
+            'legacy' → fórmula de la v2.0.0, conservada únicamente para
+                       reproducir resultados publicados con esa versión.
+                       Emite una advertencia porque no cierra.
+        round_output : bool
+            Redondear la salida a 4 decimales (default True). Ponlo en
+            False si vas a verificar la identidad numéricamente.
 
         Returns
         -------
         pd.DataFrame con columnas:
             Estrato, brecha_y1, brecha_y2, delta_total,
-            efecto_tasa, efecto_estructura
+            efecto_tasa, efecto_estructura, residuo
         """
         if self.results_.empty:
             raise RuntimeError("Ejecuta .run() primero.")
 
-        base = base_year or year1
+        if method not in ('exact', 'legacy'):
+            raise DataError("method debe ser 'exact' o 'legacy'.")
+
         years_available = self.results_[self.year_col].unique()
-        for y in [year1, year2, base]:
+        base = base_year or year1
+        needed = [year1, year2] + ([base] if method == 'legacy' else [])
+        for y in needed:
             if y not in years_available:
                 raise DataError(f"Año {y} no disponible. "
                                 f"Años disponibles: {sorted(years_available)}")
 
-        r1   = self.results_[self.results_[self.year_col] == year1].set_index('Estrato')
-        r2   = self.results_[self.results_[self.year_col] == year2].set_index('Estrato')
-        base_r = self.results_[self.results_[self.year_col] == base].set_index('Estrato')
+        if method == 'exact' and base_year is not None:
+            logger.warning(
+                "base_year se ignora con method='exact': la descomposición "
+                "exacta es simétrica y no depende de un año base."
+            )
 
-        # Alinear índices
-        common = r1.index.intersection(r2.index).intersection(base_r.index)
-        r1, r2, base_r = r1.loc[common], r2.loc[common], base_r.loc[common]
+        r1 = self.results_[self.results_[self.year_col] == year1].set_index('Estrato')
+        r2 = self.results_[self.results_[self.year_col] == year2].set_index('Estrato')
+        common = r1.index.intersection(r2.index)
+
+        if method == 'legacy':
+            base_r = self.results_[
+                self.results_[self.year_col] == base].set_index('Estrato')
+            common = common.intersection(base_r.index)
+            base_r = base_r.loc[common]
+
+        if len(common) == 0:
+            raise DataError(
+                f"No hay estratos comunes entre {year1} y {year2}."
+            )
+        dropped = (len(r1.index.union(r2.index)) - len(common))
+        if dropped > 0:
+            logger.warning(
+                f"{dropped} estrato(s) presentes en un solo año fueron "
+                "excluidos de la comparación."
+            )
+        r1, r2 = r1.loc[common], r2.loc[common]
 
         comp = pd.DataFrame(index=common)
-        comp['brecha_y1']       = r1['C_total']
-        comp['brecha_y2']       = r2['C_total']
-        comp['delta_total']     = comp['brecha_y2'] - comp['brecha_y1']
+        comp['brecha_y1']   = r1['C_total']
+        comp['brecha_y2']   = r2['C_total']
+        comp['delta_total'] = comp['brecha_y2'] - comp['brecha_y1']
 
-        # Efecto tasa: cambio en tasas con estructura fija al año base
-        comp['efecto_tasa']      = (
-            (r2['tasa_A'] - r2['tasa_B']) -
-            (r1['tasa_A'] - r1['tasa_B'])
-        ) * (base_r['prop_A'] + base_r['prop_B']) / 2
+        if method == 'exact':
+            comp['efecto_tasa'] = (
+                (r2['tasa_A'] - r1['tasa_A']) * (r1['prop_A'] + r2['prop_A']) / 2
+                - (r2['tasa_B'] - r1['tasa_B']) * (r1['prop_B'] + r2['prop_B']) / 2
+            )
+            comp['efecto_estructura'] = (
+                (r2['prop_A'] - r1['prop_A']) * (r1['tasa_A'] + r2['tasa_A']) / 2
+                - (r2['prop_B'] - r1['prop_B']) * (r1['tasa_B'] + r2['tasa_B']) / 2
+            )
+        else:
+            warnings.warn(
+                "method='legacy' reproduce la fórmula de la v2.0.0, que no "
+                "cierra (omite la interacción) y depende del año base. Úsala "
+                "solo para reproducir resultados antiguos.",
+                UserWarning,
+            )
+            comp['efecto_tasa'] = (
+                (r2['tasa_A'] - r2['tasa_B']) - (r1['tasa_A'] - r1['tasa_B'])
+            ) * (base_r['prop_A'] + base_r['prop_B']) / 2
+            comp['efecto_estructura'] = (
+                (r2['prop_A'] - r2['prop_B']) - (r1['prop_A'] - r1['prop_B'])
+            ) * (base_r['tasa_A'] + base_r['tasa_B']) / 2
 
-        # Efecto estructura: cambio en estructura con tasas fijas al año base
-        comp['efecto_estructura'] = (
-            (r2['prop_A'] - r2['prop_B']) -
-            (r1['prop_A'] - r1['prop_B'])
-        ) * (base_r['tasa_A'] + base_r['tasa_B']) / 2
+        comp['residuo'] = (comp['delta_total']
+                           - comp['efecto_tasa'] - comp['efecto_estructura'])
 
         result = comp.reset_index().rename(columns={'index': 'Estrato'})
         result = result.sort_values('delta_total', ascending=False)
 
-        logger.info(f"compare_years: {year1} vs {year2} (base={base}) | "
-                    f"Δ total={result['delta_total'].sum():.4f}")
-        return result.round(4)
+        res_tot = abs(result['residuo'].sum())
+        logger.info(
+            f"compare_years [{method}]: {year1} vs {year2} | "
+            f"Δ total={result['delta_total'].sum():.4f} | "
+            f"residuo={res_tot:.2e}"
+        )
+        if method == 'exact' and res_tot > 1e-8 * max(
+                1.0, abs(result['delta_total'].sum())):
+            logger.warning(
+                f"Residuo inesperadamente alto ({res_tot:.3e}). "
+                "Revisa si hay valores no finitos en los datos."
+            )
+        return result.round(4) if round_output else result
 
     def summary_table(
         self,
@@ -558,6 +737,315 @@ class KitagawaDecomposer:
             raise RuntimeError("Ejecuta .run() primero.")
         return self.summary_.round(4)
 
+    # ── Verificación formal (v2.1.0) ──────────────────────────────────────────
+    def check_identity(self, tol: float = 1e-9, verbose: bool = True) -> Dict:
+        """
+        Verifica formalmente las identidades algebraicas del software.
+
+        Comprueba, para cada año:
+          (1) C_tasa + C_estructura = C_total, estrato por estrato.
+          (2) Σ C_total = Σ brecha_tasa_real  (la descomposición reproduce
+              exactamente la brecha ponderada observada).
+          (3) Las proporciones de cada grupo suman 1.
+
+        Y, si hay dos o más años, comprueba en compare_years():
+          (4) CIERRE: efecto_tasa + efecto_estructura = delta_total.
+          (5) ANTISIMETRÍA: compare_years(t1,t2) = −compare_years(t2,t1).
+
+        Parameters
+        ----------
+        tol : float
+            Tolerancia absoluta (default 1e-9).
+        verbose : bool
+            Imprimir el reporte.
+
+        Returns
+        -------
+        dict con la clave 'passed' (bool) y el detalle de cada prueba.
+        """
+        if self.results_.empty:
+            raise RuntimeError("Ejecuta .run() primero.")
+
+        r = self.results_
+        checks = {}
+
+        checks['identidad_por_estrato'] = float(
+            (r['C_tasa'] + r['C_estructura'] - r['C_total']).abs().max())
+
+        by_year = r.groupby(self.year_col)
+        checks['descomposicion_iguala_brecha'] = float(
+            (by_year['C_total'].sum() - by_year['brecha_tasa_real'].sum())
+            .abs().max())
+        checks['prop_A_suman_1'] = float((by_year['prop_A'].sum() - 1).abs().max())
+        checks['prop_B_suman_1'] = float((by_year['prop_B'].sum() - 1).abs().max())
+
+        years = sorted(r[self.year_col].unique())
+        if len(years) >= 2:
+            y1, y2 = years[0], years[-1]
+            c = self.compare_years(y1, y2, round_output=False)
+            checks['cierre_compare_years'] = float(abs(
+                c['delta_total'].sum()
+                - c['efecto_tasa'].sum() - c['efecto_estructura'].sum()))
+            c_rev = self.compare_years(y2, y1, round_output=False)
+            m = c.set_index('Estrato')[['efecto_tasa', 'efecto_estructura']]
+            m_rev = c_rev.set_index('Estrato')[['efecto_tasa', 'efecto_estructura']]
+            checks['antisimetria_compare_years'] = float(
+                (m + m_rev.loc[m.index]).abs().to_numpy().max())
+
+        passed = all(v <= tol for v in checks.values())
+        result = {'passed': passed, 'tol': tol, 'detalle': checks}
+
+        if verbose:
+            print("─" * 62)
+            print("  VERIFICACIÓN FORMAL — KitagawaHealth v2.1.0")
+            print("─" * 62)
+            for k, v in checks.items():
+                estado = "OK  " if v <= tol else "FALLA"
+                print(f"  [{estado}] {k:<34s} error máx = {v:.3e}")
+            print("─" * 62)
+            print(f"  RESULTADO: {'TODAS LAS PRUEBAS PASAN' if passed else 'HAY FALLAS'}")
+            print("─" * 62)
+        return result
+
+    # ── Inferencia por bootstrap (v2.1.0) ─────────────────────────────────────
+    def bootstrap(
+        self,
+        n_boot           : int   = 1000,
+        rate_uncertainty : str   = 'binomial',
+        rate_scale       : float = 100.0,
+        se_A_col         : Optional[str] = None,
+        se_B_col         : Optional[str] = None,
+        conf_level       : float = 0.95,
+        by_stratum       : bool  = False,
+        random_state     : Optional[int] = None,
+    ) -> pd.DataFrame:
+        """
+        Errores estándar e intervalos de confianza para los componentes.
+
+        La descomposición de Kitagawa es una identidad algebraica exacta,
+        pero sus insumos —tasas y composición— se estiman con error. Este
+        método propaga esa incertidumbre a C_tasa y C_estructura mediante
+        bootstrap paramétrico en dos etapas, por año:
+
+        1. COMPOSICIÓN: los conteos de cada grupo se remuestrean de una
+           multinomial, n* ~ Multinomial(N, p̂), donde N es el total del
+           grupo en ese año. Esto propaga la incertidumbre de la estructura.
+        2. TASAS: según `rate_uncertainty`,
+           - 'binomial' : la tasa es una proporción en la escala `rate_scale`
+                          (100 para porcentajes, 1 para proporciones). Se
+                          extrae eventos ~ Binomial(n*, r/rate_scale).
+                          Es lo adecuado para prevalencias tipo ENDES.
+           - 'poisson'  : la tasa es un conteo por `rate_scale` unidades de
+                          exposición. Se extrae eventos ~ Poisson(r·n*/scale).
+                          Es lo adecuado para tasas de mortalidad/incidencia.
+           - 'normal'   : usa errores estándar provistos por el usuario en
+                          se_A_col / se_B_col (columnas del DataFrame
+                          original, al nivel año × estrato).
+           - 'none'     : las tasas se tratan como fijas y solo se propaga
+                          la incertidumbre de la composición.
+
+        Requiere conteos (count_A_col / count_B_col). Sin ellos no hay
+        tamaño muestral que sustente la inferencia y el método falla con
+        un mensaje explícito, en vez de inventar una precisión inexistente.
+
+        Parameters
+        ----------
+        n_boot : int
+            Número de réplicas (default 1000).
+        rate_uncertainty : {'binomial','poisson','normal','none'}
+        rate_scale : float
+            Escala de las tasas (100 si están en %, 1 si en proporción,
+            1000 o 100000 si son tasas por mil/cien mil).
+        se_A_col, se_B_col : str or None
+            Columnas de error estándar, solo con rate_uncertainty='normal'.
+        conf_level : float
+            Nivel de confianza (default 0.95).
+        by_stratum : bool
+            Si True, además de los totales entrega IC por estrato.
+        random_state : int or None
+            Semilla. Si None usa la del constructor.
+
+        Returns
+        -------
+        pd.DataFrame con columnas:
+            Año, [Estrato], componente, estimacion, ee_boot,
+            ic_inf, ic_sup, sesgo_boot, significativo
+
+        Notes
+        -----
+        Los intervalos son percentiles del bootstrap. `significativo`
+        indica que el IC no contiene el cero, es decir, que el componente
+        es distinguible de cero al nivel `conf_level`.
+        """
+        if self.results_.empty:
+            raise RuntimeError("Ejecuta .run() primero.")
+        if rate_uncertainty not in ('binomial', 'poisson', 'normal', 'none'):
+            raise DataError(
+                "rate_uncertainty debe ser 'binomial', 'poisson', "
+                "'normal' o 'none'.")
+        if 'count_A' not in self.results_.columns or \
+           'count_B' not in self.results_.columns:
+            raise DataError(
+                "El bootstrap requiere conteos. Instancia la clase con "
+                "count_A_col y count_B_col: sin tamaño muestral no hay base "
+                "para estimar la incertidumbre."
+            )
+        if rate_uncertainty == 'normal' and not (se_A_col and se_B_col):
+            raise DataError(
+                "rate_uncertainty='normal' exige se_A_col y se_B_col.")
+        if not (0 < conf_level < 1):
+            raise DataError("conf_level debe estar entre 0 y 1.")
+
+        seed = random_state if random_state is not None else self.random_state
+        rng  = np.random.default_rng(seed)
+        alpha = (1 - conf_level) / 2
+
+        # v2.1.0: los conteos deben ser tamaños muestrales reales. Pesos
+        # ficticios (todos iguales a 1, o totales absurdamente pequeños)
+        # pasan la comprobación de existencia pero producen errores estándar
+        # sin sentido, así que se detectan aquí.
+        tot = self.results_.groupby(self.year_col)[['count_A', 'count_B']].sum()
+        n_min = float(tot.to_numpy().min())
+        if n_min < 30:
+            raise DataError(
+                f"El total de conteos por grupo y año llega a ser {n_min:g}, "
+                "demasiado pequeño para sustentar un bootstrap. Esto suele "
+                "significar que las columnas de conteo son pesos ficticios y "
+                "no tamaños muestrales o poblaciones reales. Provee "
+                "denominadores reales (población o muestra por estrato)."
+            )
+        uniformes = (self.results_.groupby(self.year_col)['count_A'].nunique() == 1).all()
+        if uniformes and self.results_['Estrato'].nunique() > 1:
+            logger.warning(
+                "Todos los conteos del grupo A son idénticos entre estratos. "
+                "Si son pesos de relleno y no denominadores reales, los "
+                "errores estándar que siguen no son interpretables."
+            )
+
+        # Errores estándar provistos por el usuario, si aplica
+        se_map = {}
+        if rate_uncertainty == 'normal':
+            for c in (se_A_col, se_B_col):
+                if c not in self.data.columns:
+                    raise DataError(f"Columna de error estándar '{c}' "
+                                    "no encontrada en los datos.")
+            se_src = (self.data
+                      .groupby([self.year_col, self.stratum_col])[[se_A_col, se_B_col]]
+                      .mean())
+            se_map = se_src.to_dict('index')
+
+        registros   = []
+        draws_store = {}
+
+        for year, r in self.results_.groupby(self.year_col):
+            r = r.reset_index(drop=True)
+            k = len(r)
+            tA, tB = r['tasa_A'].to_numpy(float), r['tasa_B'].to_numpy(float)
+            nA, nB = r['count_A'].to_numpy(float), r['count_B'].to_numpy(float)
+            NA, NB = nA.sum(), nB.sum()
+            pA, pB = nA / NA, nB / NB
+
+            if rate_uncertainty == 'normal':
+                seA = np.array([se_map.get((year, e), {}).get(se_A_col, 0.0)
+                                for e in r['Estrato']], float)
+                seB = np.array([se_map.get((year, e), {}).get(se_B_col, 0.0)
+                                for e in r['Estrato']], float)
+            else:
+                seA = seB = None
+
+            if rate_uncertainty == 'binomial':
+                if np.nanmax([tA.max(), tB.max()]) > rate_scale:
+                    logger.warning(
+                        f"Año {year}: hay tasas mayores que rate_scale="
+                        f"{rate_scale}. Con 'binomial' las tasas deben ser "
+                        "proporciones en esa escala; revisa rate_scale o usa "
+                        "rate_uncertainty='poisson'.")
+
+            bt = np.empty((n_boot, k))   # C_tasa por estrato
+            be = np.empty((n_boot, k))   # C_estructura por estrato
+
+            for b in range(n_boot):
+                # (1) composición
+                nA_b = rng.multinomial(int(round(NA)), pA).astype(float)
+                nB_b = rng.multinomial(int(round(NB)), pB).astype(float)
+                pA_b = nA_b / nA_b.sum()
+                pB_b = nB_b / nB_b.sum()
+
+                # (2) tasas
+                if rate_uncertainty == 'none':
+                    tA_b, tB_b = tA, tB
+                elif rate_uncertainty == 'normal':
+                    tA_b = tA + rng.normal(0, 1, k) * seA
+                    tB_b = tB + rng.normal(0, 1, k) * seB
+                elif rate_uncertainty == 'binomial':
+                    pi_A = np.clip(tA / rate_scale, 0, 1)
+                    pi_B = np.clip(tB / rate_scale, 0, 1)
+                    mA = np.maximum(nA_b, 1)
+                    mB = np.maximum(nB_b, 1)
+                    tA_b = rng.binomial(mA.astype(int), pi_A) / mA * rate_scale
+                    tB_b = rng.binomial(mB.astype(int), pi_B) / mB * rate_scale
+                else:  # poisson
+                    mA = np.maximum(nA_b, 1)
+                    mB = np.maximum(nB_b, 1)
+                    tA_b = rng.poisson(np.maximum(tA * mA / rate_scale, 0)) / mA * rate_scale
+                    tB_b = rng.poisson(np.maximum(tB * mB / rate_scale, 0)) / mB * rate_scale
+
+                bt[b] = (tA_b - tB_b) * (pA_b + pB_b) / 2
+                be[b] = (pA_b - pB_b) * (tA_b + tB_b) / 2
+
+            draws_store[year] = {'C_tasa': bt, 'C_estructura': be,
+                                 'Estrato': r['Estrato'].tolist()}
+
+            comp_draws = {
+                'C_tasa'      : bt.sum(axis=1),
+                'C_estructura': be.sum(axis=1),
+                'D_total'     : bt.sum(axis=1) + be.sum(axis=1),
+            }
+            comp_point = {
+                'C_tasa'      : r['C_tasa'].sum(),
+                'C_estructura': r['C_estructura'].sum(),
+                'D_total'     : r['C_total'].sum(),
+            }
+            for nombre, draws in comp_draws.items():
+                lo, hi = np.quantile(draws, [alpha, 1 - alpha])
+                registros.append({
+                    self.year_col : year,
+                    'Estrato'     : 'TOTAL',
+                    'componente'  : nombre,
+                    'estimacion'  : comp_point[nombre],
+                    'ee_boot'     : draws.std(ddof=1),
+                    'ic_inf'      : lo,
+                    'ic_sup'      : hi,
+                    'sesgo_boot'  : draws.mean() - comp_point[nombre],
+                    'significativo': bool(lo > 0 or hi < 0),
+                })
+
+            if by_stratum:
+                for j, estrato in enumerate(r['Estrato']):
+                    for nombre, arr, punto in (
+                        ('C_tasa',       bt[:, j], r['C_tasa'].iloc[j]),
+                        ('C_estructura', be[:, j], r['C_estructura'].iloc[j]),
+                    ):
+                        lo, hi = np.quantile(arr, [alpha, 1 - alpha])
+                        registros.append({
+                            self.year_col : year,
+                            'Estrato'     : estrato,
+                            'componente'  : nombre,
+                            'estimacion'  : punto,
+                            'ee_boot'     : arr.std(ddof=1),
+                            'ic_inf'      : lo,
+                            'ic_sup'      : hi,
+                            'sesgo_boot'  : arr.mean() - punto,
+                            'significativo': bool(lo > 0 or hi < 0),
+                        })
+
+        self.bootstrap_ = pd.DataFrame(registros).round(4)
+        self.bootstrap_draws_ = draws_store
+        logger.info(
+            f"Bootstrap completado: {n_boot} réplicas | "
+            f"modelo de tasas='{rate_uncertainty}' | IC al {conf_level:.0%}")
+        return self.bootstrap_
+
     def export_results(self, path: str = 'kitagawa_results.xlsx'):
         """Exporta resultados completos, resumen anual y top causas a Excel."""
         with pd.ExcelWriter(path, engine='openpyxl') as writer:
@@ -567,6 +1055,10 @@ class KitagawaDecomposer:
                 writer, sheet_name='Resumen_Anual', index=False)
             self.summary_table(top_n=20).to_excel(
                 writer, sheet_name='Top_Estratos', index=False)
+            # v2.1.0: cuarta hoja con la inferencia, si se corrió el bootstrap
+            if not self.bootstrap_.empty:
+                self.bootstrap_.to_excel(
+                    writer, sheet_name='Inferencia_Bootstrap', index=False)
         logger.info(f"Resultados exportados a: {path}")
 
     # ═══════════════════════════════════════════════════════════════════════
@@ -1255,7 +1747,11 @@ class KitagawaLifecycle:
         year_col         : str = 'Año',
         stratum_col      : str = 'Causas',
         row_filter       : Optional[Dict] = None,
+        rate_weighting   : str = 'auto',
+        random_state     : Optional[int] = None,
     ):
+        self.rate_weighting     = rate_weighting
+        self.random_state       = random_state
         self.data               = data.copy()
         self.lifecycle_config   = lifecycle_config or self.DEFAULT_CONFIG
         self.group_A_label      = group_A_label
@@ -1302,6 +1798,8 @@ class KitagawaLifecycle:
                 group_A_label = f"{group_name} ({self.group_A_label})",
                 group_B_label = f"{group_name} ({self.group_B_label})",
                 row_filter    = self.row_filter,
+                rate_weighting= self.rate_weighting,
+                random_state  = self.random_state,
             )
             try:
                 kd.run()
