@@ -1,5 +1,5 @@
 # ============================================================
-# KitagawaHealth v2.0.0 — Dependencias requeridas
+# KitagawaHealth v2.1.0 — Dependencias requeridas
 # ============================================================
 # Instalación: pip install -r requirements.txt
 #
