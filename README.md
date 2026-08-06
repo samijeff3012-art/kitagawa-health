@@ -1,4 +1,4 @@
-# KitagawaHealth v2.0.0
+# KitagawaHealth v2.1.0
 
 > **Herramienta generalizada de descomposición de Kitagawa para el análisis de brechas en indicadores cuantitativos de salud entre dos grupos cualesquiera.**
 
