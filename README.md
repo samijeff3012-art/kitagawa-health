@@ -4,7 +4,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE.txt)
 [![Python](https://img.shields.io/badge/Python-3.8%2B-blue)](https://www.python.org/)
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.XXXXXXX.svg)](https://doi.org/10.5281/zenodo.XXXXXXX)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20291586.svg)](https://doi.org/10.5281/zenodo.XXXXXXX)
 
 ---
 
@@ -36,7 +36,7 @@ A diferencia de implementaciones existentes, KitagawaHealth:
 | Rosa Ysabel Bazán Valque | Universidad Nacional Toribio Rodríguez de Mendoza |
 | Mercedes Acosta Román | Universidad Nacional Autónoma de Tayacaja Daniel Hernández Morillo |
 
-**Contacto:** cjeffry.30@gmail.com
+**Contacto:** cesar.samillan@untrm.edu.pe
 
 ---
 
