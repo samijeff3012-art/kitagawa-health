@@ -1,0 +1,46 @@
+{
+  "title": "KitagawaHealth: descomposición de Kitagawa para brechas en indicadores de salud",
+  "version": "2.1.0",
+  "upload_type": "software",
+  "language": "spa",
+  "license": "MIT",
+  "access_right": "open",
+  "description": "<p>M&oacute;dulo Python que implementa la descomposici&oacute;n de Kitagawa (1955) de forma generalizada para el an&aacute;lisis de brechas en indicadores cuantitativos de salud entre dos grupos cualesquiera. Separa el diferencial total en componente de tasa y componente de estructura.</p><p><strong>Novedades de la v2.1.0:</strong> descomposici&oacute;n exacta y sim&eacute;trica de dos periodos en <code>compare_years()</code>, que en la v2.0.0 no cerraba y depend&iacute;a del a&ntilde;o base; agregaci&oacute;n de tasas ponderada por exposici&oacute;n; inferencia por bootstrap con errores est&aacute;ndar e intervalos de confianza; verificaci&oacute;n formal mediante <code>check_identity()</code>; suite de 28 pruebas de propiedades.</p><p><strong>Esta versi&oacute;n cambia resultados num&eacute;ricos respecto de la v2.0.0.</strong> V&eacute;ase CHANGELOG.md.</p>",
+  "keywords": [
+    "descomposición de Kitagawa",
+    "desigualdades en salud",
+    "epidemiología",
+    "bootstrap",
+    "Python",
+    "Perú"
+  ],
+  "creators": [
+    {
+      "name": "Samillán Vásquez, César Jefferson",
+      "affiliation": "Universidad Nacional Toribio Rodríguez de Mendoza de Amazonas",
+      "orcid": "0009-0003-8916-6508"
+    },
+    {
+      "name": "León Montoya, Gladys Bernardita",
+      "affiliation": "Universidad Nacional Toribio Rodríguez de Mendoza de Amazonas",
+      "orcid": "0000-0003-0578-5030"
+    },
+    {
+      "name": "Bazán Valque, Rosa Ysabel",
+      "affiliation": "Universidad Nacional Toribio Rodríguez de Mendoza de Amazonas",
+      "orcid": "0000-0002-1674-6136"
+    },
+    {
+      "name": "Acosta Román, Mercedes",
+      "affiliation": "Universidad Nacional Autónoma de Tayacaja Daniel Hernández Morillo",
+      "orcid": "0000-0002-4792-4185"
+    }
+  ],
+  "related_identifiers": [
+    {
+      "identifier": "10.5281/zenodo.20291586",
+      "relation": "isVersionOf",
+      "scheme": "doi"
+    }
+  ]
+}
