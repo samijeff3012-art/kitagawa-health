@@ -26,7 +26,7 @@ Autores  : Cesar Jefferson Samillan Vasquez
            Rosa Ysabel Bazán Valque
 Versión  : 2.1.0
 Licencia : MIT
-DOI      : 10.5281/zenodo.20291587
+DOI      : 10.5281/zenodo.20291586
 
 Novedades de la versión 2.1.0
 -----------------------------
