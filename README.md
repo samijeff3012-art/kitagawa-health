@@ -50,7 +50,7 @@ A diferencia de implementaciones existentes, KitagawaHealth:
 
 | Nombre | Institución |
 |--------|-------------|
-| César Jefferson Samillán Vásquez | Universidad Nacional Toribio Rodríguez de Mendoza |
+| Cesar Jefferson Samillan Vasquez | Universidad Nacional Toribio Rodríguez de Mendoza |
 | Gladys Bernardita León Montoya | Universidad Nacional Toribio Rodríguez de Mendoza |
 | Rosa Ysabel Bazán Valque | Universidad Nacional Toribio Rodríguez de Mendoza |
 | Mercedes Acosta Román | Universidad Nacional Autónoma de Tayacaja Daniel Hernández Morillo |
@@ -394,7 +394,7 @@ Donde `r_A_i` y `r_B_i` son las tasas del estrato `i` para los grupos A y B, `p_
 
 ```bibtex
 @software{kitagawa_health_2026,
-  author    = {Samillán Vásquez, César Jefferson and
+  author    = {Samillan Vasquez, Cesar Jefferson and
                León Montoya, Gladys Bernardita and
                Bazán Valque, Rosa Ysabel and
                Acosta Román, Mercedes},
@@ -428,4 +428,4 @@ Efron B, Tibshirani RJ. (1993). *An introduction to the bootstrap.* Chapman & Ha
 ## Licencia
 
 Este proyecto está bajo la licencia [MIT](LICENSE.txt).
-Copyright © 2026 Samillán Vásquez, León Montoya, Bazán Valque, Acosta Román.
+Copyright © 2026 Samillan Vasquez, León Montoya, Bazán Valque, Acosta Román.
